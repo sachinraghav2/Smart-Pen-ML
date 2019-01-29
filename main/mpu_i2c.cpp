@@ -1,14 +1,3 @@
-// =========================================================================
-// Released under the MIT License
-// Copyright 2017-2018 Natanael Josue Rabello. All rights reserved.
-// For the license information refer to LICENSE file in root directory.
-// =========================================================================
-
-/**
- * @file mpu_i2c.cpp
- * Example on how to setup MPU through I2C for basic usage.
- */
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,49 +16,40 @@
 #include "MPU.hpp"
 #include "mpu/math.hpp"
 #include "mpu/types.hpp"
+//#include "mqtt_app.h"
 
-
-
-/*#include <stddef.h>
-#include "esp_wifi.h"
-#include "esp_system.h"
-#include "nvs_flash.h"
-#include "esp_event_loop.h"
-#include "lwip/sockets.h"
-#include "lwip/dns.h"
-#include "lwip/netdb.h"
-#include "esp_log.h"
-#include "freertos/semphr.h"
-#include "freertos/queue.h"
-#include "freertos/event_groups.h"*/
-extern "C"{
-#include "mqtt_app.h"
+extern "C" {
+	void app_main(void);
+    void mqtt_app(void *);
 }
 
+void mqtt_caller(void *);
+void mpu_reader(void *);
 
-/*static EventGroupHandle_t wifi_event_group;
-const static int CONNECTED_BIT = BIT0;
-#define CONFIG_WIFI_SSID "Lenovo2"
-#define CONFIG_WIFI_PASSWORD "12345678"
-#define HOST_URL "192.168.43.18"*/
 
 static const char* TAG2 = "example";
 float x, y, z;
 char x_acc[10], y_acc[10], z_acc[10], dummy_string[20];
-//static char x_acc[] = "Hello";
+
 
 static constexpr gpio_num_t SDA = GPIO_NUM_21;
 static constexpr gpio_num_t SCL = GPIO_NUM_22;
 static constexpr uint32_t CLOCK_SPEED = 100000;  // range from 100 KHz ~ 400Hz
 
-
+/*
+float pow1(int n, int afterpoint){
+    float power=1;
+    for(int i=0; i<afterpoint; i++)
+        power = n*power;
+    return power;
+}*/
 // reverses a string 'str' of length 'len' 
 void reverse(char *str, int len) 
 { 
     int i=0, j=len-1, temp; 
     while (i<j) 
     { 
-        temp = str[i]; 
+        temp = str[i];
         str[i] = str[j]; 
         str[j] = temp; 
         i++; j--; 
@@ -99,13 +79,30 @@ int intToStr(int x, char str[], int d)
 void ftoa(float n, char *res, int afterpoint) 
 { 
     // Extract integer part 
-    int ipart = (int)n; 
+    int ipart = (int)n, i;
+    float fpart;
   
-    // Extract floating part 
-    float fpart = n - (float)ipart; 
-  
-    // convert integer part to string 
-    int i = intToStr(ipart, res, 0); 
+     
+    if(ipart>n){        // if the number is negative
+        res[0] = '-';   // add first
+        res[1] = '0';
+        n = (-n);
+        ipart = (-ipart);
+        // Extract floating part 
+        fpart = n - (float)ipart;
+        // convert integer part to string 
+        i = intToStr(ipart, res+2, 0);
+        i += 2;
+    }
+    else{
+        res[0] = '0';
+        // Extract floating part 
+        fpart = n - (float)ipart;
+        // convert integer part to string 
+        i = intToStr(ipart, res+1, 0);
+        i++;
+    }
+ 
   
     // check for display option after point 
     if (afterpoint != 0) 
@@ -117,7 +114,14 @@ void ftoa(float n, char *res, int afterpoint)
     } 
 }
 
-extern "C" void app_main() {
+
+void app_main(void) {
+
+    xTaskCreate(mpu_reader, "MPU_reader", 40960, NULL, 5, NULL);
+    xTaskCreate(mqtt_caller, "MQTT", 20480, NULL, 5, NULL);
+}
+
+void mpu_reader(void *args){
     printf("$ MPU Driver Example: MPU-I2C\n");
     fflush(stdout);
 
@@ -136,9 +140,7 @@ extern "C" void app_main() {
     ESP_ERROR_CHECK(i2c_param_config(I2C_NUM_0, &conf));
     ESP_ERROR_CHECK(i2c_driver_install(I2C_NUM_0, conf.mode, 0, 0, 0));
     */
-    vTaskDelay(10 / portTICK_PERIOD_MS);
-    mqtt_app((void *)dummy_string);
-    vTaskDelay(10 / portTICK_PERIOD_MS);
+    
     MPU_t MPU;  // create a default MPU object
     MPU.setBus(i2c0);  // set bus port, not really needed since default is i2c0
     MPU.setAddr(mpud::MPU_I2CADDRESS_AD0_LOW);  // set address, default is AD0_LOW
@@ -155,7 +157,7 @@ extern "C" void app_main() {
     // Initialize
     ESP_ERROR_CHECK(MPU.initialize());  // initialize the chip and set initial configurations
     // Setup with your configurations
-     ESP_ERROR_CHECK(MPU.setSampleRate(50));  // set sample rate to 50 Hz
+    ESP_ERROR_CHECK(MPU.setSampleRate(100));  // set sample rate to 100 Hz
     // ESP_ERROR_CHECK(MPU.setGyroFullScale(mpud::GYRO_FS_500DPS));
     // ESP_ERROR_CHECK(MPU.setAccelFullScale(mpud::ACCEL_FS_4G));
 
@@ -182,9 +184,13 @@ extern "C" void app_main() {
         ftoa(y, y_acc, 3);
         z = (float)accelG.z;
         ftoa(z, z_acc, 3);
-
-        printf("accel: [%+6.2f %+6.2f %+6.2f ] (G) \t", accelG.x, accelG.y, accelG.z);
-        printf("gyro: [%+7.2f %+7.2f %+7.2f ] (º/s)\n", gyroDPS[0], gyroDPS[1], gyroDPS[2]);
+/*
+        printf("accel: [%s %s %s ] (G) \t", x_acc, y_acc, z_acc);
+        printf("gyro: [%+7.2f %+7.2f %+7.2f ] (º/s)\n", gyroDPS[0], gyroDPS[1], gyroDPS[2]);*/
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
+}
+
+void mqtt_caller(void *args){
+    mqtt_app((void *)dummy_string);
 }
